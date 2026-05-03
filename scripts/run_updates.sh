@@ -34,7 +34,19 @@ cd "$ROOT_DIR"
 
 echo "Writing Ansible output to $log_file"
 set +e
-ansible-playbook -i "$STATIC_INVENTORY" -i "$PROXMOX_INVENTORY" "$PLAYBOOK" "$@" 2>&1 | tee "$log_file"
+{
+  echo "Refreshing SSH known_hosts from current inventory"
+  "$ROOT_DIR/scripts/seed_known_hosts.sh"
+  seed_status=$?
+
+  if [[ "$seed_status" -ne 0 ]]; then
+    echo "known_hosts refresh failed with exit status $seed_status"
+    exit "$seed_status"
+  fi
+
+  echo "Running Ansible playbook"
+  ansible-playbook -i "$STATIC_INVENTORY" -i "$PROXMOX_INVENTORY" "$PLAYBOOK" "$@"
+} 2>&1 | tee "$log_file"
 ansible_status=${PIPESTATUS[0]}
 set -e
 

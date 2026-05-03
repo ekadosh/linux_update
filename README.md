@@ -208,7 +208,9 @@ Install the weekly Sunday 03:00 cron entry:
 make install-cron
 ```
 
-Logs are written to `logs/update-YYYYMMDD-HHMMSS.log`.
+Logs are written to `logs/update-YYYYMMDD-HHMMSS.log`. Each scheduled run
+re-runs the dynamic inventory and refreshes SSH `known_hosts` before applying
+updates, so newly tagged Proxmox VMs are picked up automatically.
 
 ## Email Alerts
 
