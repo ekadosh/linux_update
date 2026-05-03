@@ -1,0 +1,12 @@
+---
+all:
+  children:
+    linux_update_targets:
+      children:
+        external_debian:
+          hosts:
+            # Add non-Proxmox Debian/Ubuntu servers here.
+            #
+            # debian-fileserver:
+            #   ansible_host: debian-fileserver.int.example.com
+            #   no_reboot: true

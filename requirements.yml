@@ -1,0 +1,5 @@
+---
+collections:
+  - name: community.proxmox
+    version: ">=1.6.0"
+

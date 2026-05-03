@@ -1,0 +1,7 @@
+---
+all:
+  children:
+    linux_update_targets:
+      hosts:
+        syntax-check-host:
+          ansible_connection: local
