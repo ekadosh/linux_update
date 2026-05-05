@@ -116,6 +116,21 @@ Test one VM directly:
 ssh -i ~/.ssh/ansible_ed25519 ansible@vm1 sudo -n true
 ```
 
+If SSH connects but hangs during key exchange from this runner, leave
+`SSH_COMPATIBILITY_MODE=auto` in `.env`. Update runs first check connectivity
+with normal SSH options, then retry the preflight with:
+
+```text
+-o KexAlgorithms=curve25519-sha256 -o IPQoS=none
+```
+
+When the fallback succeeds, the playbook runs once with those compatibility
+options. To force the workaround for every scheduled run, set:
+
+```text
+SSH_COMPATIBILITY_MODE=always
+```
+
 ## Proxmox Permissions
 
 Use a Proxmox API token with the narrowest permissions that work for your
