@@ -27,6 +27,11 @@ DEFAULT_ANSIBLE_SSH_ARGS="${ANSIBLE_SSH_ARGS:--o ControlMaster=auto -o ControlPe
 SSH_COMPATIBILITY_MODE="${SSH_COMPATIBILITY_MODE:-auto}"
 SSH_COMPATIBILITY_ARGS="${SSH_COMPATIBILITY_ARGS:--o ControlMaster=auto -o ControlPersist=60s -o KexAlgorithms=curve25519-sha256 -o IPQoS=none}"
 
+if [[ -n "${ANSIBLE_PRIVATE_KEY_FILE:-}" ]]; then
+  ANSIBLE_PRIVATE_KEY_FILE="${ANSIBLE_PRIVATE_KEY_FILE/#\~/$HOME}"
+  export ANSIBLE_PRIVATE_KEY_FILE
+fi
+
 mkdir -p "$LOG_DIR"
 timestamp="$(date +%Y%m%d-%H%M%S)"
 log_file="$LOG_DIR/update-$timestamp.log"
@@ -34,6 +39,29 @@ started_at="$(date -Is)"
 
 cd "$ROOT_DIR"
 . "$ROOT_DIR/.venv/bin/activate"
+
+validate_ssh_key() {
+  if [[ -z "${ANSIBLE_PRIVATE_KEY_FILE:-}" ]]; then
+    return 0
+  fi
+
+  if [[ -f "$ANSIBLE_PRIVATE_KEY_FILE" ]]; then
+    return 0
+  fi
+
+  cat >&2 <<EOF
+SSH private key not found.
+
+Configured path:
+  ANSIBLE_PRIVATE_KEY_FILE=$ANSIBLE_PRIVATE_KEY_FILE
+
+Fix .env so ANSIBLE_PRIVATE_KEY_FILE points to the actual key on this runner.
+For example:
+  ANSIBLE_PRIVATE_KEY_FILE=$HOME/.ssh/ansible_ed25519
+
+EOF
+  return 1
+}
 
 run_connectivity_check() {
   local ssh_args="$1"
@@ -115,6 +143,13 @@ choose_ssh_args() {
 echo "Writing Ansible output to $log_file"
 set +e
 {
+  validate_ssh_key
+  key_status=$?
+
+  if [[ "$key_status" -ne 0 ]]; then
+    exit "$key_status"
+  fi
+
   echo "Refreshing SSH known_hosts from current inventory"
   "$ROOT_DIR/scripts/seed_known_hosts.sh"
   seed_status=$?

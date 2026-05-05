@@ -71,10 +71,17 @@ def main() -> int:
         )
     )
 
-    with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as smtp:
-        if starttls:
-            smtp.starttls()
-        smtp.send_message(message)
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as smtp:
+            if starttls:
+                smtp.starttls()
+            smtp.send_message(message)
+    except OSError as exc:
+        print(f"Email alert failed: unable to connect to {smtp_host}:{smtp_port}: {exc}")
+        return 1
+    except smtplib.SMTPException as exc:
+        print(f"Email alert failed: SMTP error from {smtp_host}:{smtp_port}: {exc}")
+        return 1
 
     print(f"Email alert sent to {recipient}")
     return 0
@@ -82,4 +89,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
