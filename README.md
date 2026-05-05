@@ -131,6 +131,14 @@ options. To force the workaround for every scheduled run, set:
 SSH_COMPATIBILITY_MODE=always
 ```
 
+The SSH preflight has its own timeouts so a key-exchange stall does not leave
+the run looking frozen:
+
+```text
+SSH_PREFLIGHT_CONNECT_TIMEOUT=10
+SSH_PREFLIGHT_WALL_TIMEOUT=45
+```
+
 ## Proxmox Permissions
 
 Use a Proxmox API token with the narrowest permissions that work for your

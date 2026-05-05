@@ -26,6 +26,8 @@ export ANSIBLE_REMOTE_USER="${ANSIBLE_SSH_USER:-ansible}"
 DEFAULT_ANSIBLE_SSH_ARGS="${ANSIBLE_SSH_ARGS:--o ControlMaster=auto -o ControlPersist=60s}"
 SSH_COMPATIBILITY_MODE="${SSH_COMPATIBILITY_MODE:-auto}"
 SSH_COMPATIBILITY_ARGS="${SSH_COMPATIBILITY_ARGS:--o ControlMaster=auto -o ControlPersist=60s -o KexAlgorithms=curve25519-sha256 -o IPQoS=none}"
+SSH_PREFLIGHT_CONNECT_TIMEOUT="${SSH_PREFLIGHT_CONNECT_TIMEOUT:-10}"
+SSH_PREFLIGHT_WALL_TIMEOUT="${SSH_PREFLIGHT_WALL_TIMEOUT:-45}"
 
 if [[ -n "${ANSIBLE_PRIVATE_KEY_FILE:-}" ]]; then
   ANSIBLE_PRIVATE_KEY_FILE="${ANSIBLE_PRIVATE_KEY_FILE/#\~/$HOME}"
@@ -64,12 +66,40 @@ EOF
 }
 
 run_connectivity_check() {
+  local label="$1"
+  shift
   local ssh_args="$1"
   shift
+  local status=0
 
-  ANSIBLE_SSH_ARGS="$ssh_args" \
+  echo "SSH preflight [$label]"
+  echo "  connect timeout: ${SSH_PREFLIGHT_CONNECT_TIMEOUT}s"
+  echo "  wall timeout: ${SSH_PREFLIGHT_WALL_TIMEOUT}s"
+  echo "  ssh args: $ssh_args"
+  if [[ ${#connectivity_args[@]} -gt 0 ]]; then
+    echo "  inventory limit args: ${connectivity_args[*]}"
+  fi
+
+  timeout --foreground "$SSH_PREFLIGHT_WALL_TIMEOUT" \
+    env ANSIBLE_SSH_ARGS="$ssh_args" \
     ansible -i "$STATIC_INVENTORY" -i "$PROXMOX_INVENTORY" \
-    linux_update_targets -m ansible.builtin.ping "$@"
+    linux_update_targets -m ansible.builtin.ping \
+    -T "$SSH_PREFLIGHT_CONNECT_TIMEOUT" "$@"
+  status=$?
+
+  case "$status" in
+    0)
+      echo "SSH preflight [$label] succeeded."
+      ;;
+    124)
+      echo "SSH preflight [$label] timed out after ${SSH_PREFLIGHT_WALL_TIMEOUT}s." >&2
+      ;;
+    *)
+      echo "SSH preflight [$label] failed with exit status $status." >&2
+      ;;
+  esac
+
+  return "$status"
 }
 
 build_connectivity_args() {
@@ -121,7 +151,7 @@ choose_ssh_args() {
   esac
 
   echo "Checking SSH connectivity with default SSH options"
-  if run_connectivity_check "$DEFAULT_ANSIBLE_SSH_ARGS" "${connectivity_args[@]}"; then
+  if run_connectivity_check "default" "$DEFAULT_ANSIBLE_SSH_ARGS" "${connectivity_args[@]}"; then
     ANSIBLE_SSH_ARGS="$DEFAULT_ANSIBLE_SSH_ARGS"
     export ANSIBLE_SSH_ARGS
     return 0
@@ -129,7 +159,7 @@ choose_ssh_args() {
 
   echo "Default SSH connectivity failed. Retrying with compatibility SSH options:"
   echo "  $SSH_COMPATIBILITY_ARGS"
-  if run_connectivity_check "$SSH_COMPATIBILITY_ARGS" "${connectivity_args[@]}"; then
+  if run_connectivity_check "compatibility" "$SSH_COMPATIBILITY_ARGS" "${connectivity_args[@]}"; then
     echo "Compatibility SSH options succeeded; using them for this update run."
     ANSIBLE_SSH_ARGS="$SSH_COMPATIBILITY_ARGS"
     export ANSIBLE_SSH_ARGS
@@ -175,7 +205,9 @@ set -e
 
 finished_at="$(date -Is)"
 
-if [[ "${ALERT_EMAIL_ENABLED:-true}" == "true" ]]; then
+if [[ "$ansible_status" -eq 130 || "$ansible_status" -eq 141 ]]; then
+  echo "Run interrupted by user; skipping email alert."
+elif [[ "${ALERT_EMAIL_ENABLED:-true}" == "true" ]]; then
   if ! "$ROOT_DIR/scripts/send_run_email.py" \
     --status "$ansible_status" \
     --log-file "$log_file" \
