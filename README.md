@@ -195,6 +195,9 @@ Run a dry run:
 make dry-run
 ```
 
+Dry-run alert emails include `[DRY RUN]` in the subject and body so check-mode
+failures are easy to distinguish from real update runs.
+
 Run updates:
 
 ```bash

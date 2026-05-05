@@ -42,6 +42,22 @@ started_at="$(date -Is)"
 cd "$ROOT_DIR"
 . "$ROOT_DIR/.venv/bin/activate"
 
+run_mode() {
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --check | -C)
+        echo "dry-run"
+        return 0
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+
+  echo "update"
+}
+
 validate_ssh_key() {
   if [[ -z "${ANSIBLE_PRIVATE_KEY_FILE:-}" ]]; then
     return 0
@@ -175,6 +191,8 @@ choose_ssh_args() {
 }
 
 echo "Writing Ansible output to $log_file"
+mode="$(run_mode "$@")"
+echo "Run mode: $mode"
 set +e
 {
   validate_ssh_key
@@ -216,7 +234,8 @@ elif [[ "${ALERT_EMAIL_ENABLED:-true}" == "true" ]]; then
     --status "$ansible_status" \
     --log-file "$log_file" \
     --started-at "$started_at" \
-    --finished-at "$finished_at"; then
+    --finished-at "$finished_at" \
+    --mode "$mode"; then
     echo "Email alert failed" >&2
   fi
 fi

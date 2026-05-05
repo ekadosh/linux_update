@@ -30,6 +30,12 @@ def main() -> int:
     parser.add_argument("--log-file", required=True, help="Path to the run log")
     parser.add_argument("--started-at", required=True, help="Run start timestamp")
     parser.add_argument("--finished-at", required=True, help="Run finish timestamp")
+    parser.add_argument(
+        "--mode",
+        choices=["update", "dry-run"],
+        default="update",
+        help="Whether this was a real update run or an Ansible check-mode dry run",
+    )
     args = parser.parse_args()
 
     recipient = os.getenv("ALERT_EMAIL_TO")
@@ -48,16 +54,18 @@ def main() -> int:
     }
 
     result = "SUCCESS" if args.status == 0 else "FAILED"
+    mode_label = "DRY RUN" if args.mode == "dry-run" else "UPDATE"
     log_file = Path(args.log_file)
 
     message = EmailMessage()
     message["From"] = sender
     message["To"] = recipient
-    message["Subject"] = f"[{result}] Ansible updates on {platform.node()}"
+    message["Subject"] = f"[{result}] [{mode_label}] Ansible updates on {platform.node()}"
     message.set_content(
         "\n".join(
             [
                 f"Result: {result}",
+                f"Run mode: {mode_label}",
                 f"Exit status: {args.status}",
                 f"Host: {platform.node()}",
                 f"Started: {args.started_at}",
