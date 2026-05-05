@@ -121,7 +121,7 @@ If SSH connects but hangs during key exchange from this runner, leave
 with normal SSH options, then retry the preflight with:
 
 ```text
--o KexAlgorithms=curve25519-sha256 -o IPQoS=none
+-o ControlMaster=no -o KexAlgorithms=curve25519-sha256 -o HostKeyAlgorithms=ssh-ed25519 -o IPQoS=none
 ```
 
 When the fallback succeeds, the playbook runs once with those compatibility

@@ -25,7 +25,7 @@ set +a
 export ANSIBLE_REMOTE_USER="${ANSIBLE_SSH_USER:-ansible}"
 DEFAULT_ANSIBLE_SSH_ARGS="${ANSIBLE_SSH_ARGS:--o ControlMaster=auto -o ControlPersist=60s}"
 SSH_COMPATIBILITY_MODE="${SSH_COMPATIBILITY_MODE:-auto}"
-SSH_COMPATIBILITY_ARGS="${SSH_COMPATIBILITY_ARGS:--o ControlMaster=auto -o ControlPersist=60s -o KexAlgorithms=curve25519-sha256 -o IPQoS=none}"
+SSH_COMPATIBILITY_ARGS="${SSH_COMPATIBILITY_ARGS:--o ControlMaster=no -o KexAlgorithms=curve25519-sha256 -o HostKeyAlgorithms=ssh-ed25519 -o IPQoS=none}"
 SSH_PREFLIGHT_CONNECT_TIMEOUT="${SSH_PREFLIGHT_CONNECT_TIMEOUT:-10}"
 SSH_PREFLIGHT_WALL_TIMEOUT="${SSH_PREFLIGHT_WALL_TIMEOUT:-45}"
 
@@ -83,8 +83,8 @@ run_connectivity_check() {
   timeout --foreground "$SSH_PREFLIGHT_WALL_TIMEOUT" \
     env ANSIBLE_SSH_ARGS="$ssh_args" \
     ansible -i "$STATIC_INVENTORY" -i "$PROXMOX_INVENTORY" \
-    linux_update_targets -m ansible.builtin.ping \
-    -T "$SSH_PREFLIGHT_CONNECT_TIMEOUT" "$@"
+    linux_update_targets -m ansible.builtin.raw -a true \
+    -e ansible_become=false -T "$SSH_PREFLIGHT_CONNECT_TIMEOUT" "$@"
   status=$?
 
   case "$status" in
@@ -159,6 +159,10 @@ choose_ssh_args() {
 
   echo "Default SSH connectivity failed. Retrying with compatibility SSH options:"
   echo "  $SSH_COMPATIBILITY_ARGS"
+  if [[ "$SSH_COMPATIBILITY_ARGS" != *"HostKeyAlgorithms=ssh-ed25519"* ]]; then
+    echo "  note: SSH_COMPATIBILITY_ARGS does not include HostKeyAlgorithms=ssh-ed25519" >&2
+    echo "        add it in .env if this host stalls during SSH key exchange" >&2
+  fi
   if run_connectivity_check "compatibility" "$SSH_COMPATIBILITY_ARGS" "${connectivity_args[@]}"; then
     echo "Compatibility SSH options succeeded; using them for this update run."
     ANSIBLE_SSH_ARGS="$SSH_COMPATIBILITY_ARGS"
