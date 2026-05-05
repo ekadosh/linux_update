@@ -53,7 +53,7 @@ def main() -> int:
     message = EmailMessage()
     message["From"] = sender
     message["To"] = recipient
-    message["Subject"] = f"[{result}] Homelab Ansible updates on {platform.node()}"
+    message["Subject"] = f"[{result}] Ansible updates on {platform.node()}"
     message.set_content(
         "\n".join(
             [
