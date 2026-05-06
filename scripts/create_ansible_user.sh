@@ -131,6 +131,11 @@ else
   sudo usermod --append --groups sudo "$ansible_user"
 fi
 
+# useradd leaves the password field locked on some distros, and sshd can reject
+# even public-key auth with "account is locked". Use an impossible password hash
+# so password login stays disabled while the account remains valid for SSH keys.
+sudo usermod --password '*' "$ansible_user"
+
 home_dir="$(getent passwd "$ansible_user" | cut -d: -f6)"
 if [[ -z "$home_dir" ]]; then
   echo "Unable to determine home directory for $ansible_user" >&2
