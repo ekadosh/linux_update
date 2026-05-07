@@ -16,7 +16,7 @@ define LOAD_ENV
 if [[ ! -f "$(ENV_FILE)" ]]; then echo "Missing $(ENV_FILE). Copy .env.example to .env and fill in values." >&2; exit 1; fi; set -a; source "$(ENV_FILE)"; set +a; export PATH="$(CURDIR)/.venv/bin:$$PATH"; export ANSIBLE_REMOTE_USER="$${ANSIBLE_SSH_USER:-ansible}";
 endef
 
-.PHONY: bootstrap create-user known-hosts inventory ping update dry-run install-cron syntax-check static-inventory-check
+.PHONY: bootstrap create-user known-hosts inventory ping update dry-run install-cron syntax-check static-inventory-check shell-check test
 
 bootstrap:
 	./scripts/bootstrap.sh
@@ -43,7 +43,12 @@ dry-run:
 	./scripts/run_updates.sh --check --diff $(LIMIT_ARGS) $(EXTRA_ARGS)
 
 install-cron:
-	./scripts/install_cron.sh
+	./scripts/install_cron.sh $(EXTRA_ARGS)
 
 syntax-check:
 	.venv/bin/ansible-playbook -i tests/syntax_inventory.yml --syntax-check $(PLAYBOOK)
+
+shell-check:
+	tests/shell_checks.sh
+
+test: shell-check syntax-check

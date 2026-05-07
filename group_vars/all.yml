@@ -7,4 +7,7 @@ apt_min_archive_free_mb: 512
 apt_retries: 10
 apt_retry_delay: 30
 apt_task_timeout: 3600
+post_update_health_timeout: 300
+proxmox_rollback_start: true
+proxmox_rollback_timeout: 300
 reboot_timeout: 1800

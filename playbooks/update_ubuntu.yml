@@ -62,107 +62,204 @@
         - not ansible_check_mode
 
   tasks:
-    - name: Clean apt package archive cache before upgrade
-      ansible.builtin.command:
-        argv:
-          - apt-get
-          - clean
-      changed_when: false
-      when: not ansible_check_mode
+    - name: Update host and verify health
+      block:
+        - name: Clean apt package archive cache before upgrade
+          ansible.builtin.command:
+            argv:
+              - apt-get
+              - clean
+          changed_when: false
+          when: not ansible_check_mode
 
-    - name: Check available space for apt package archives
-      ansible.builtin.command:
-        argv:
-          - df
-          - -Pm
-          - "{{ apt_archive_path }}"
-      changed_when: false
-      check_mode: false
-      register: apt_archive_df
+        - name: Check available space for apt package archives
+          ansible.builtin.command:
+            argv:
+              - df
+              - -Pm
+              - "{{ apt_archive_path }}"
+          changed_when: false
+          check_mode: false
+          register: apt_archive_df
 
-    - name: Record available apt archive space
-      ansible.builtin.set_fact:
-        apt_archive_free_mb: "{{ apt_archive_df.stdout_lines[1].split()[3] | int }}"
+        - name: Record available apt archive space
+          ansible.builtin.set_fact:
+            apt_archive_free_mb: "{{ apt_archive_df.stdout_lines[1].split()[3] | int }}"
 
-    - name: Fail early when apt archive filesystem is too full
-      ansible.builtin.assert:
-        that:
-          - apt_archive_free_mb | int >= apt_min_archive_free_mb | int
-        fail_msg: >-
-          {{ inventory_hostname }} has only {{ apt_archive_free_mb }} MB free
-          for apt package archives at {{ apt_archive_path }} after running
-          apt-get clean. At least {{ apt_min_archive_free_mb }} MB is required.
-          Free disk space or lower apt_min_archive_free_mb for this host.
-        success_msg: >-
-          {{ inventory_hostname }} has {{ apt_archive_free_mb }} MB free for apt
-          package archives.
+        - name: Fail early when apt archive filesystem is too full
+          ansible.builtin.assert:
+            that:
+              - apt_archive_free_mb | int >= apt_min_archive_free_mb | int
+            fail_msg: >-
+              {{ inventory_hostname }} has only {{ apt_archive_free_mb }} MB free
+              for apt package archives at {{ apt_archive_path }} after running
+              apt-get clean. At least {{ apt_min_archive_free_mb }} MB is required.
+              Free disk space or lower apt_min_archive_free_mb for this host.
+            success_msg: >-
+              {{ inventory_hostname }} has {{ apt_archive_free_mb }} MB free for apt
+              package archives.
 
-    - name: Refresh apt package indexes
-      ansible.builtin.command:
-        argv:
-          - apt-get
-          - -o
-          - "DPkg::Lock::Timeout={{ apt_lock_timeout | int }}"
-          - update
-      timeout: "{{ apt_task_timeout | int }}"
-      changed_when: false
-      register: apt_update
-      until: apt_update.rc == 0
-      retries: "{{ apt_retries | int }}"
-      delay: "{{ apt_retry_delay | int }}"
+        - name: Refresh apt package indexes
+          ansible.builtin.command:
+            argv:
+              - apt-get
+              - -o
+              - "DPkg::Lock::Timeout={{ apt_lock_timeout | int }}"
+              - update
+          timeout: "{{ apt_task_timeout | int }}"
+          changed_when: false
+          register: apt_update
+          until: apt_update.rc == 0
+          retries: "{{ apt_retries | int }}"
+          delay: "{{ apt_retry_delay | int }}"
 
-    - name: Safely upgrade packages
-      ansible.builtin.apt:
-        upgrade: safe
-        dpkg_options: force-confdef,force-confold
-        lock_timeout: "{{ apt_lock_timeout | int }}"
-      timeout: "{{ apt_task_timeout | int }}"
-      register: apt_upgrade
-      until: apt_upgrade is succeeded
-      retries: "{{ apt_retries | int }}"
-      delay: "{{ apt_retry_delay | int }}"
+        - name: Safely upgrade packages
+          ansible.builtin.apt:
+            upgrade: safe
+            dpkg_options: force-confdef,force-confold
+            lock_timeout: "{{ apt_lock_timeout | int }}"
+          timeout: "{{ apt_task_timeout | int }}"
+          register: apt_upgrade
+          until: apt_upgrade is succeeded
+          retries: "{{ apt_retries | int }}"
+          delay: "{{ apt_retry_delay | int }}"
 
-    - name: Remove unused dependencies
-      ansible.builtin.apt:
-        autoremove: true
-        lock_timeout: "{{ apt_lock_timeout | int }}"
-      timeout: "{{ apt_task_timeout | int }}"
-      register: apt_autoremove
-      until: apt_autoremove is succeeded
-      retries: "{{ apt_retries | int }}"
-      delay: "{{ apt_retry_delay | int }}"
+        - name: Remove unused dependencies
+          ansible.builtin.apt:
+            autoremove: true
+            lock_timeout: "{{ apt_lock_timeout | int }}"
+          timeout: "{{ apt_task_timeout | int }}"
+          register: apt_autoremove
+          until: apt_autoremove is succeeded
+          retries: "{{ apt_retries | int }}"
+          delay: "{{ apt_retry_delay | int }}"
 
-    - name: Clean obsolete apt package files
-      ansible.builtin.apt:
-        autoclean: true
-        lock_timeout: "{{ apt_lock_timeout | int }}"
-      timeout: "{{ apt_task_timeout | int }}"
-      register: apt_autoclean
-      until: apt_autoclean is succeeded
-      retries: "{{ apt_retries | int }}"
-      delay: "{{ apt_retry_delay | int }}"
+        - name: Clean obsolete apt package files
+          ansible.builtin.apt:
+            autoclean: true
+            lock_timeout: "{{ apt_lock_timeout | int }}"
+          timeout: "{{ apt_task_timeout | int }}"
+          register: apt_autoclean
+          until: apt_autoclean is succeeded
+          retries: "{{ apt_retries | int }}"
+          delay: "{{ apt_retry_delay | int }}"
 
-    - name: Check whether reboot is required
-      ansible.builtin.stat:
-        path: /var/run/reboot-required
-      register: reboot_required
+        - name: Check whether reboot is required
+          ansible.builtin.stat:
+            path: /var/run/reboot-required
+          register: reboot_required
 
-    - name: Report reboot suppressed by Proxmox no-reboot tag
-      ansible.builtin.debug:
-        msg: >-
-          {{ inventory_hostname }} requires a reboot, but automatic reboot is
-          disabled for this host.
-      when:
-        - reboot_required.stat.exists
-        - no_reboot | default(false) | bool or 'no-reboot' in (proxmox_tags | default([]))
+        - name: Report reboot suppressed by host configuration
+          ansible.builtin.debug:
+            msg: >-
+              {{ inventory_hostname }} requires a reboot, but automatic reboot is
+              disabled for this host.
+          when:
+            - reboot_required.stat.exists
+            - no_reboot | default(false) | bool or 'no-reboot' in (proxmox_tags | default([]))
 
-    - name: Reboot after updates when Ubuntu requires it
-      ansible.builtin.reboot:
-        msg: "Reboot initiated by Ansible after package updates"
-        reboot_timeout: "{{ reboot_timeout | int }}"
-        test_command: whoami
-      when:
-        - reboot_required.stat.exists
-        - not (no_reboot | default(false) | bool)
-        - "'no-reboot' not in (proxmox_tags | default([]))"
-        - not ansible_check_mode
+        - name: Reboot after updates when Ubuntu requires it
+          ansible.builtin.reboot:
+            msg: "Reboot initiated by Ansible after package updates"
+            reboot_timeout: "{{ reboot_timeout | int }}"
+            test_command: whoami
+          when:
+            - reboot_required.stat.exists
+            - not (no_reboot | default(false) | bool)
+            - "'no-reboot' not in (proxmox_tags | default([]))"
+            - not ansible_check_mode
+
+        - name: Wait for SSH after update and possible reboot
+          ansible.builtin.wait_for_connection:
+            timeout: "{{ post_update_health_timeout | int }}"
+          when: not ansible_check_mode
+
+        - name: Verify passwordless sudo after update
+          become: false
+          ansible.builtin.command:
+            argv:
+              - sudo
+              - -n
+              - true
+          changed_when: false
+          when: not ansible_check_mode
+
+        - name: Verify apt package database health
+          ansible.builtin.command:
+            argv:
+              - apt-get
+              - check
+          timeout: "{{ post_update_health_timeout | int }}"
+          changed_when: false
+          when: not ansible_check_mode
+
+        - name: Verify dpkg has no interrupted package operations
+          ansible.builtin.command:
+            argv:
+              - dpkg
+              - --audit
+          timeout: "{{ post_update_health_timeout | int }}"
+          register: dpkg_audit
+          changed_when: false
+          failed_when: dpkg_audit.rc != 0 or dpkg_audit.stdout | trim | length > 0
+          when: not ansible_check_mode
+
+      rescue:
+        - name: Roll back Proxmox VM to pre-update snapshot
+          become: false
+          delegate_to: localhost
+          ansible.builtin.command:
+            argv:
+              - "{{ playbook_dir }}/../scripts/rollback_snapshot.py"
+              - "--node"
+              - "{{ proxmox_node }}"
+              - "--vmid"
+              - "{{ proxmox_vmid }}"
+              - "--snapshot"
+              - "{{ update_snapshot_name }}"
+              - "--timeout"
+              - "{{ proxmox_rollback_timeout | string }}"
+              - "{{ proxmox_rollback_start | bool | ternary('--start', '--no-start') }}"
+          register: rollback_snapshot
+          changed_when: true
+          when:
+            - proxmox_vmid is defined
+            - proxmox_node is defined
+            - not ansible_check_mode
+
+        - name: Reset SSH connection after rollback
+          ansible.builtin.meta: reset_connection
+          when:
+            - proxmox_vmid is defined
+            - rollback_snapshot is defined
+            - rollback_snapshot is succeeded
+            - not ansible_check_mode
+
+        - name: Wait for SSH after rollback
+          ansible.builtin.wait_for_connection:
+            timeout: "{{ post_update_health_timeout | int }}"
+          when:
+            - proxmox_vmid is defined
+            - rollback_snapshot is defined
+            - rollback_snapshot is succeeded
+            - proxmox_rollback_start | bool
+            - not ansible_check_mode
+
+        - name: Fail after rolling back Proxmox VM
+          ansible.builtin.fail:
+            msg: >-
+              Update or post-update verification failed on {{ inventory_hostname }}.
+              Rolled back Proxmox VM {{ proxmox_vmid }} to snapshot
+              {{ update_snapshot_name }}.
+          when:
+            - proxmox_vmid is defined
+            - proxmox_node is defined
+            - not ansible_check_mode
+
+        - name: Fail static host after unsuccessful update verification
+          ansible.builtin.fail:
+            msg: >-
+              Update or post-update verification failed on {{ inventory_hostname }}.
+              No Proxmox VM snapshot metadata is available, so automatic rollback
+              was skipped.
+          when: proxmox_vmid is not defined or proxmox_node is not defined or ansible_check_mode

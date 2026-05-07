@@ -5,3 +5,12 @@ all:
       hosts:
         syntax-check-host:
           ansible_connection: local
+        syntax-check-proxmox-host:
+          ansible_connection: local
+          proxmox_api_host: pve.example.lan
+          proxmox_api_port: 8006
+          proxmox_validate_certs: false
+          proxmox_node: pve
+          proxmox_vmid: "100"
+          proxmox_tags:
+            - ansible-update

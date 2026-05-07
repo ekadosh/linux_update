@@ -150,6 +150,8 @@ VM.Audit VM.Snapshot VM.Monitor
 
 For Proxmox VE 9, guest-agent privileges are more granular; use the guest-agent
 audit privilege instead of `VM.Monitor` if your cluster rejects `VM.Monitor`.
+Automatic rollback also needs `VM.Snapshot.Rollback`, and the default
+post-rollback start behavior needs `VM.PowerMgmt`.
 
 The inventory script accepts token auth through:
 
@@ -228,10 +230,20 @@ make update EXTRA_ARGS="--limit my-vm-name"
 scripts/run_updates.sh --limit my-vm-name
 ```
 
-Install the weekly Sunday 03:00 cron entry:
+Install the update cron entry:
 
 ```bash
 make install-cron
+```
+
+The installer prompts for daily, weekly, monthly, weekdays, or a custom cron
+expression. Press Enter through the prompts to keep the default weekly Sunday
+03:00 schedule. For noninteractive setup:
+
+```bash
+make install-cron EXTRA_ARGS="--preset daily --time 04:15"
+make install-cron EXTRA_ARGS="--preset weekly --weekday mon --time 02:30"
+make install-cron EXTRA_ARGS="--preset custom --cron-expression '*/20 * * * *'"
 ```
 
 Logs are written to `logs/update-YYYYMMDD-HHMMSS.log`. Each scheduled run
@@ -277,6 +289,26 @@ ansible-pre-update-YYYYMMDD-HHMMSS
 Snapshots do not include RAM (`vmstate: false`). The playbook keeps the newest
 three snapshots created by this automation and prunes only snapshots whose names
 start with `ansible-pre-update-`.
+
+## Rollback Behavior
+
+After package updates and any required reboot, the playbook verifies that SSH
+recovers, passwordless sudo still works, `apt-get check` succeeds, and
+`dpkg --audit` reports no interrupted package operations. If any update or
+verification task fails on a Proxmox-discovered VM, Ansible rolls that VM back
+to the pre-update snapshot created for that host and starts it afterward by
+default.
+
+Static non-Proxmox hosts run the same verification checks, but they cannot be
+rolled back automatically because they have no Proxmox snapshot metadata.
+
+Rollback settings live in `group_vars/all.yml`:
+
+```yaml
+post_update_health_timeout: 300
+proxmox_rollback_start: true
+proxmox_rollback_timeout: 300
+```
 
 ## Notes
 
