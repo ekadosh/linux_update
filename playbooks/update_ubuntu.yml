@@ -180,7 +180,7 @@
             argv:
               - sudo
               - -n
-              - true
+              - "true"
           changed_when: false
           when: not ansible_check_mode
 
@@ -227,13 +227,8 @@
             - proxmox_node is defined
             - not ansible_check_mode
 
-        - name: Reset SSH connection after rollback
+        - name: Reset SSH connection after failed update
           ansible.builtin.meta: reset_connection
-          when:
-            - proxmox_vmid is defined
-            - rollback_snapshot is defined
-            - rollback_snapshot is succeeded
-            - not ansible_check_mode
 
         - name: Wait for SSH after rollback
           ansible.builtin.wait_for_connection:

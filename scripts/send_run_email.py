@@ -6,12 +6,26 @@ from __future__ import annotations
 import argparse
 import os
 import platform
+import re
 import smtplib
 from email.message import EmailMessage
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 
 MAX_LOG_BYTES = 80_000
+TASK_RE = re.compile(r"^TASK \[(?P<name>.+?)\]")
+TASK_RESULT_RE = re.compile(r"^(?P<status>ok|changed|fatal|skipping|skipped|unreachable): \[(?P<host>[^\]]+)\]")
+RECAP_RE = re.compile(
+    r"^(?P<host>\S+)\s+:\s+"
+    r"ok=(?P<ok>\d+)\s+"
+    r"changed=(?P<changed>\d+)\s+"
+    r"unreachable=(?P<unreachable>\d+)\s+"
+    r"failed=(?P<failed>\d+)\s+"
+    r"skipped=(?P<skipped>\d+)\s+"
+    r"rescued=(?P<rescued>\d+)\s+"
+    r"ignored=(?P<ignored>\d+)"
+)
 
 
 def tail_text(path: Path, max_bytes: int = MAX_LOG_BYTES) -> str:
@@ -22,6 +36,102 @@ def tail_text(path: Path, max_bytes: int = MAX_LOG_BYTES) -> str:
         f"[Log truncated to last {max_bytes} bytes]\n\n"
         + data[-max_bytes:].decode("utf-8", errors="replace")
     )
+
+
+def full_text(path: Path) -> str:
+    return path.read_bytes().decode("utf-8", errors="replace")
+
+
+def result_host(raw_host: str) -> str:
+    return raw_host.split(" -> ", 1)[0]
+
+
+def parse_ansible_log(log_text: str) -> Tuple[Dict[str, Dict[str, str]], Dict[str, Dict[str, int]]]:
+    task_results: Dict[str, Dict[str, str]] = {}
+    recap: Dict[str, Dict[str, int]] = {}
+    current_task = ""
+
+    for line in log_text.splitlines():
+        task_match = TASK_RE.match(line)
+        if task_match:
+            current_task = task_match.group("name")
+            task_results.setdefault(current_task, {})
+            continue
+
+        recap_match = RECAP_RE.match(line)
+        if recap_match:
+            values = recap_match.groupdict()
+            host = values.pop("host")
+            recap[host] = {key: int(value) for key, value in values.items()}
+            continue
+
+        if not current_task:
+            continue
+
+        result_match = TASK_RESULT_RE.match(line)
+        if result_match:
+            status = result_match.group("status")
+            if status == "fatal":
+                status = "failed"
+            task_results[current_task][result_host(result_match.group("host"))] = status
+
+    return task_results, recap
+
+
+def host_update_phrase(host: str, package_status: Optional[str], failed: bool, unreachable: bool, mode: str) -> str:
+    if unreachable:
+        return f"{host} was unreachable; no update was completed."
+
+    if package_status == "changed":
+        phrase = "would be updated" if mode == "dry-run" else "was updated"
+    elif package_status == "ok":
+        phrase = "would already be up to date" if mode == "dry-run" else "was already up to date"
+    elif package_status in {"skipping", "skipped"}:
+        phrase = "was skipped before package upgrades"
+    elif failed:
+        return f"{host} failed before package update status could be confirmed."
+    else:
+        phrase = "ran, but package update status was not found in the log"
+
+    if failed:
+        phrase += ", but the run failed during post-update verification"
+
+    return f"{host} {phrase}."
+
+
+def build_summary(log_text: str, mode: str) -> List[str]:
+    task_results, recap = parse_ansible_log(log_text)
+    package_results = task_results.get("Safely upgrade packages", {})
+    reboot_results = task_results.get("Reboot after updates when Ubuntu requires it", {})
+    suppressed_reboots = task_results.get("Report reboot suppressed by host configuration", {})
+    rollback_results = task_results.get("Roll back Proxmox VM to pre-update snapshot", {})
+
+    hosts = list(recap)
+    for host in package_results:
+        if host not in recap:
+            hosts.append(host)
+
+    if not hosts:
+        return ["No per-host update summary could be parsed from the Ansible log."]
+
+    summary = []
+    for host in hosts:
+        counts = recap.get(host, {})
+        failed = counts.get("failed", 0) > 0
+        unreachable = counts.get("unreachable", 0) > 0
+        line = host_update_phrase(host, package_results.get(host), failed, unreachable, mode)
+
+        if reboot_results.get(host) == "changed":
+            line += " It was rebooted because the OS required it."
+        elif suppressed_reboots.get(host) == "ok":
+            line += " Reboot was required but suppressed by host configuration."
+
+        if rollback_results.get(host) == "changed":
+            line += " It was rolled back to the pre-update snapshot."
+
+        summary.append(line)
+
+    return summary
 
 
 def main() -> int:
@@ -56,6 +166,8 @@ def main() -> int:
     result = "SUCCESS" if args.status == 0 else "FAILED"
     mode_label = "DRY RUN" if args.mode == "dry-run" else "UPDATE"
     log_file = Path(args.log_file)
+    log_tail = tail_text(log_file)
+    summary = build_summary(full_text(log_file), args.mode)
 
     message = EmailMessage()
     message["From"] = sender
@@ -74,7 +186,11 @@ def main() -> int:
                 "",
                 "Run log:",
                 "--------",
-                tail_text(log_file),
+                log_tail,
+                "",
+                "Summary:",
+                "--------",
+                *summary,
             ]
         )
     )

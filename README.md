@@ -253,8 +253,8 @@ updates, so newly tagged Proxmox VMs are picked up automatically.
 ## Email Alerts
 
 `scripts/run_updates.sh` sends an email after each run, including cron runs. It
-uses the SMTP relay settings from `.env` and includes the run result plus the
-tail of the Ansible log.
+uses the SMTP relay settings from `.env` and includes the run result, the tail
+of the Ansible log, and a plain-English per-host summary at the end.
 
 For your relay:
 
