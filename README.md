@@ -153,6 +153,11 @@ audit privilege instead of `VM.Monitor` if your cluster rejects `VM.Monitor`.
 Automatic rollback also needs `VM.Snapshot.Rollback`, and the default
 post-rollback start behavior needs `VM.PowerMgmt`.
 
+If the token lacks guest-agent privileges on a particular VM, the inventory
+script now logs an `Inventory warning` for that VM, drops it from the run, and
+keeps every other host. Grant `VM.GuestAgent.Audit` on that VM to bring it back
+into the update rotation.
+
 The inventory script accepts token auth through:
 
 ```text
@@ -253,8 +258,10 @@ updates, so newly tagged Proxmox VMs are picked up automatically.
 ## Email Alerts
 
 `scripts/run_updates.sh` sends an email after each run, including cron runs. It
-uses the SMTP relay settings from `.env` and includes the run result, the tail
-of the Ansible log, and a plain-English per-host summary at the end.
+uses the SMTP relay settings from `.env`. The body leads with the plain-English
+per-host summary, then run metadata, then only the failing tasks and any
+inventory warnings. The full Ansible log is attached rather than pasted inline
+(gzipped when it is larger than 256 KB).
 
 For your relay:
 

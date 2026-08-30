@@ -4,18 +4,29 @@
 from __future__ import annotations
 
 import argparse
+import gzip
+import json
 import os
 import platform
 import re
 import smtplib
+from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
-MAX_LOG_BYTES = 80_000
+MAX_ATTACHMENT_BYTES = 5_000_000
+GZIP_THRESHOLD_BYTES = 256_000
+MAX_FAILURE_DETAIL_LINES = 12
 TASK_RE = re.compile(r"^TASK \[(?P<name>.+?)\]")
 TASK_RESULT_RE = re.compile(r"^(?P<status>ok|changed|fatal|skipping|skipped|unreachable): \[(?P<host>[^\]]+)\]")
+FAILURE_RE = re.compile(r"^(?P<status>fatal|unreachable): \[(?P<host>[^\]]+)\][^=]*=> (?P<payload>\{.*\})\s*$")
+INVENTORY_ERROR_RE = re.compile(r"^Inventory (?:error|warning): (?P<message>.+)$")
+DPKG_ERROR_RE = re.compile(
+    r"^(dpkg: error|dpkg: dependency problems|dpkg: warning|E: |Errors were encountered|"
+    r"Sub-process |.*Permission denied|.*No such file or directory)"
+)
 RECAP_RE = re.compile(
     r"^(?P<host>\S+)\s+:\s+"
     r"ok=(?P<ok>\d+)\s+"
@@ -26,16 +37,6 @@ RECAP_RE = re.compile(
     r"rescued=(?P<rescued>\d+)\s+"
     r"ignored=(?P<ignored>\d+)"
 )
-
-
-def tail_text(path: Path, max_bytes: int = MAX_LOG_BYTES) -> str:
-    data = path.read_bytes()
-    if len(data) <= max_bytes:
-        return data.decode("utf-8", errors="replace")
-    return (
-        f"[Log truncated to last {max_bytes} bytes]\n\n"
-        + data[-max_bytes:].decode("utf-8", errors="replace")
-    )
 
 
 def full_text(path: Path) -> str:
@@ -134,6 +135,128 @@ def build_summary(log_text: str, mode: str) -> List[str]:
     return summary
 
 
+def dedupe(items: List[str]) -> List[str]:
+    seen = set()
+    unique = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            unique.append(item)
+    return unique
+
+
+def interesting_output_lines(payload: Dict[str, object]) -> List[str]:
+    """Pick the lines an operator actually needs out of a failed module's output."""
+    candidates: List[str] = []
+    for key in ("stdout_lines", "stderr_lines"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            candidates.extend(str(item) for item in value)
+
+    picked = [line.strip() for line in candidates if DPKG_ERROR_RE.match(line.strip())]
+    return dedupe(picked)
+
+
+def build_failure_details(log_text: str) -> List[str]:
+    """Summarize each failed task instead of pasting the whole run log."""
+    details: List[str] = []
+    current_task = ""
+
+    for line in log_text.splitlines():
+        task_match = TASK_RE.match(line)
+        if task_match:
+            current_task = task_match.group("name")
+            continue
+
+        failure_match = FAILURE_RE.match(line)
+        if not failure_match:
+            continue
+
+        host = result_host(failure_match.group("host"))
+        try:
+            payload = json.loads(failure_match.group("payload"))
+        except ValueError:
+            payload = {}
+
+        header = f"{host} - TASK [{current_task or 'unknown task'}]"
+        attempts = payload.get("attempts")
+        if isinstance(attempts, int) and attempts > 1:
+            header += f" (failed after {attempts} attempts)"
+        details.append(header)
+
+        message = str(payload.get("msg", "")).strip()
+        for message_line in message.splitlines()[:4]:
+            if message_line.strip():
+                details.append(f"  {message_line.strip()}")
+
+        output_lines = interesting_output_lines(payload)
+        for output_line in output_lines[:MAX_FAILURE_DETAIL_LINES]:
+            details.append(f"  {output_line}")
+        if len(output_lines) > MAX_FAILURE_DETAIL_LINES:
+            details.append(
+                f"  ... {len(output_lines) - MAX_FAILURE_DETAIL_LINES} more lines in the attached log"
+            )
+
+        details.append("")
+
+    while details and details[-1] == "":
+        details.pop()
+
+    return details
+
+
+def build_warnings(log_text: str) -> List[str]:
+    """Collect inventory and Ansible warnings once, not once per inventory parse."""
+    warnings: List[str] = []
+    for line in log_text.splitlines():
+        inventory_match = INVENTORY_ERROR_RE.match(line.strip())
+        if inventory_match:
+            warnings.append(f"Inventory: {inventory_match.group('message')}")
+    return dedupe(warnings)
+
+
+def format_duration(started_at: str, finished_at: str) -> str:
+    try:
+        started = datetime.fromisoformat(started_at)
+        finished = datetime.fromisoformat(finished_at)
+    except ValueError:
+        return ""
+
+    seconds = int((finished - started).total_seconds())
+    if seconds < 0:
+        return ""
+    return f"{seconds // 60}m{seconds % 60:02d}s"
+
+
+def prepare_log_attachment(log_file: Path) -> Tuple[Dict[str, object], str]:
+    """Return add_attachment kwargs for the run log plus the note that describes it."""
+    data = log_file.read_bytes()
+    truncated = len(data) > MAX_ATTACHMENT_BYTES
+    if truncated:
+        data = data[-MAX_ATTACHMENT_BYTES:]
+
+    if len(data) > GZIP_THRESHOLD_BYTES:
+        payload = gzip.compress(data)
+        kwargs: Dict[str, object] = {
+            "maintype": "application",
+            "subtype": "gzip",
+            "filename": f"{log_file.name}.gz",
+        }
+    else:
+        payload = data
+        kwargs = {
+            "maintype": "text",
+            "subtype": "plain",
+            "filename": log_file.name,
+        }
+
+    note = f"Full log attached as {kwargs['filename']} ({max(len(payload) // 1024, 1)} KB)"
+    if truncated:
+        note += ", truncated to the last portion of the run"
+
+    return {"data": payload, **kwargs}, note + "."
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Send Ansible update result email")
     parser.add_argument("--status", type=int, required=True, help="Ansible exit status")
@@ -166,33 +289,43 @@ def main() -> int:
     result = "SUCCESS" if args.status == 0 else "FAILED"
     mode_label = "DRY RUN" if args.mode == "dry-run" else "UPDATE"
     log_file = Path(args.log_file)
-    log_tail = tail_text(log_file)
-    summary = build_summary(full_text(log_file), args.mode)
+    log_text = full_text(log_file)
+    runner = platform.node()
+
+    duration = format_duration(args.started_at, args.finished_at)
+    run_line = f"Started {args.started_at}, finished {args.finished_at}"
+    if duration:
+        run_line += f" ({duration})"
+
+    body: List[str] = [
+        f"{result}: {mode_label} run from {runner}",
+        "",
+        *build_summary(log_text, args.mode),
+        "",
+        run_line,
+        f"Exit status: {args.status}",
+        f"Log file: {log_file}",
+    ]
+
+    failure_details = build_failure_details(log_text)
+    if failure_details:
+        body += ["", "Failures:", "---------", *failure_details]
+
+    warnings = build_warnings(log_text)
+    if warnings:
+        body += ["", "Warnings:", "---------", *warnings]
+
+    attachment, attachment_note = prepare_log_attachment(log_file)
+    body += ["", attachment_note]
 
     message = EmailMessage()
     message["From"] = sender
     message["To"] = recipient
-    message["Subject"] = f"[{result}] [{mode_label}] Ansible updates on {platform.node()}"
-    message.set_content(
-        "\n".join(
-            [
-                f"Result: {result}",
-                f"Run mode: {mode_label}",
-                f"Exit status: {args.status}",
-                f"Host: {platform.node()}",
-                f"Started: {args.started_at}",
-                f"Finished: {args.finished_at}",
-                f"Log file: {log_file}",
-                "",
-                "Run log:",
-                "--------",
-                log_tail,
-                "",
-                "Summary:",
-                "--------",
-                *summary,
-            ]
-        )
+    message["Subject"] = f"[{result}] [{mode_label}] Ansible updates on {runner}"
+    message.set_content("\n".join(body) + "\n")
+    message.add_attachment(
+        attachment.pop("data"),
+        **attachment,
     )
 
     try:

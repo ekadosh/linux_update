@@ -159,7 +159,9 @@
             lock_timeout: "{{ apt_lock_timeout | int }}"
           timeout: "{{ apt_task_timeout | int }}"
           register: apt_upgrade
-          until: apt_upgrade is succeeded
+          until: >-
+            apt_upgrade is succeeded
+            or not (apt_upgrade.msg | default('') is search(apt_transient_error_pattern))
           retries: "{{ apt_retries | int }}"
           delay: "{{ apt_retry_delay | int }}"
 
@@ -169,7 +171,9 @@
             lock_timeout: "{{ apt_lock_timeout | int }}"
           timeout: "{{ apt_task_timeout | int }}"
           register: apt_autoremove
-          until: apt_autoremove is succeeded
+          until: >-
+            apt_autoremove is succeeded
+            or not (apt_autoremove.msg | default('') is search(apt_transient_error_pattern))
           retries: "{{ apt_retries | int }}"
           delay: "{{ apt_retry_delay | int }}"
 
@@ -179,7 +183,9 @@
             lock_timeout: "{{ apt_lock_timeout | int }}"
           timeout: "{{ apt_task_timeout | int }}"
           register: apt_autoclean
-          until: apt_autoclean is succeeded
+          until: >-
+            apt_autoclean is succeeded
+            or not (apt_autoclean.msg | default('') is search(apt_transient_error_pattern))
           retries: "{{ apt_retries | int }}"
           delay: "{{ apt_retry_delay | int }}"
 

@@ -170,6 +170,7 @@ def build_inventory() -> dict[str, Any]:
     hosts: list[str] = []
     hostvars: dict[str, dict[str, Any]] = {}
     skipped: list[str] = []
+    unresolved: list[str] = []
 
     for vm in resources:
         if vm.get("type") != "qemu":
@@ -185,7 +186,14 @@ def build_inventory() -> dict[str, Any]:
         vmid = str(vm.get("vmid", ""))
         name = str(vm.get("name") or f"vm-{vmid}")
 
-        interfaces = get_guest_interfaces(proxmox, node, vmid)
+        try:
+            interfaces = get_guest_interfaces(proxmox, node, vmid)
+        except InventoryError as exc:
+            # One unreadable guest must not drop every other VM from the run.
+            unresolved.append(f"{name} ({vmid})")
+            print(f"Inventory warning: {exc}", file=sys.stderr)
+            continue
+
         ansible_host = first_usable_ipv4(interfaces)
         if not ansible_host:
             skipped.append(f"{name} ({vmid})")
@@ -217,6 +225,13 @@ def build_inventory() -> dict[str, Any]:
     }
     if skipped:
         inventory["_meta"]["skipped_no_guest_agent_ipv4"] = skipped
+    if unresolved:
+        inventory["_meta"]["skipped_guest_agent_unreadable"] = unresolved
+        print(
+            f"Inventory warning: skipped {len(unresolved)} tagged VM(s) with unreadable "
+            f"guest-agent data: {', '.join(unresolved)}",
+            file=sys.stderr,
+        )
 
     return inventory
 
