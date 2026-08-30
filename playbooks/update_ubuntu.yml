@@ -113,6 +113,45 @@
           retries: "{{ apt_retries | int }}"
           delay: "{{ apt_retry_delay | int }}"
 
+        - name: Record first-seen dates for upgradable packages
+          ansible.builtin.script:
+            cmd: >-
+              {{ playbook_dir }}/../scripts/filter_new_packages.py
+              --db-path {{ apt_age_db_path }}
+              record
+          changed_when: false
+          when:
+            - not ansible_check_mode
+            - apt_min_age_days | int > 0
+
+        - name: Identify packages to hold due to min-age filter
+          ansible.builtin.script:
+            cmd: >-
+              {{ playbook_dir }}/../scripts/filter_new_packages.py
+              --db-path {{ apt_age_db_path }}
+              list-holdable
+              --min-age {{ apt_min_age_days | int }}
+          register: age_filter_result
+          changed_when: false
+          check_mode: false
+          when: apt_min_age_days | int > 0
+
+        - name: Set age-held packages fact
+          ansible.builtin.set_fact:
+            age_held_packages: "{{ age_filter_result.stdout | from_json }}"
+          when:
+            - apt_min_age_days | int > 0
+            - age_filter_result is not skipped
+
+        - name: Hold packages that have not yet met the minimum age requirement
+          ansible.builtin.command:
+            argv: "{{ ['apt-mark', 'hold'] + age_held_packages }}"
+          changed_when: true
+          when:
+            - not ansible_check_mode
+            - apt_min_age_days | int > 0
+            - age_held_packages | default([]) | length > 0
+
         - name: Safely upgrade packages
           ansible.builtin.apt:
             upgrade: safe
@@ -120,7 +159,9 @@
             lock_timeout: "{{ apt_lock_timeout | int }}"
           timeout: "{{ apt_task_timeout | int }}"
           register: apt_upgrade
-          until: apt_upgrade is succeeded
+          until: >-
+            apt_upgrade is succeeded
+            or not (apt_upgrade.msg | default('') is search(apt_transient_error_pattern))
           retries: "{{ apt_retries | int }}"
           delay: "{{ apt_retry_delay | int }}"
 
@@ -130,7 +171,9 @@
             lock_timeout: "{{ apt_lock_timeout | int }}"
           timeout: "{{ apt_task_timeout | int }}"
           register: apt_autoremove
-          until: apt_autoremove is succeeded
+          until: >-
+            apt_autoremove is succeeded
+            or not (apt_autoremove.msg | default('') is search(apt_transient_error_pattern))
           retries: "{{ apt_retries | int }}"
           delay: "{{ apt_retry_delay | int }}"
 
@@ -140,7 +183,9 @@
             lock_timeout: "{{ apt_lock_timeout | int }}"
           timeout: "{{ apt_task_timeout | int }}"
           register: apt_autoclean
-          until: apt_autoclean is succeeded
+          until: >-
+            apt_autoclean is succeeded
+            or not (apt_autoclean.msg | default('') is search(apt_transient_error_pattern))
           retries: "{{ apt_retries | int }}"
           delay: "{{ apt_retry_delay | int }}"
 
@@ -258,3 +303,13 @@
               No Proxmox VM snapshot metadata is available, so automatic rollback
               was skipped.
           when: proxmox_vmid is not defined or proxmox_node is not defined or ansible_check_mode
+
+      always:
+        - name: Unhold age-filtered packages
+          ansible.builtin.command:
+            argv: "{{ ['apt-mark', 'unhold'] + (age_held_packages | default([])) }}"
+          changed_when: false
+          when:
+            - not ansible_check_mode
+            - apt_min_age_days | int > 0
+            - age_held_packages | default([]) | length > 0

@@ -1,0 +1,4 @@
+---
+# The UniFi Network Application upgrade involves MongoDB migrations and Java
+# service restarts that routinely exceed the default 3600 s task timeout.
+apt_task_timeout: 7200
