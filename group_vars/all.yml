@@ -11,3 +11,5 @@ post_update_health_timeout: 300
 proxmox_rollback_start: true
 proxmox_rollback_timeout: 300
 reboot_timeout: 1800
+apt_min_age_days: 7
+apt_age_db_path: /var/lib/ansible-linux-update/package-first-seen.json
