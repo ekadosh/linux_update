@@ -23,6 +23,9 @@ TASK_RE = re.compile(r"^TASK \[(?P<name>.+?)\]")
 TASK_RESULT_RE = re.compile(r"^(?P<status>ok|changed|fatal|skipping|skipped|unreachable): \[(?P<host>[^\]]+)\]")
 FAILURE_RE = re.compile(r"^(?P<status>fatal|unreachable): \[(?P<host>[^\]]+)\][^=]*=> (?P<payload>\{.*\})\s*$")
 INVENTORY_ERROR_RE = re.compile(r"^Inventory (?:error|warning): (?P<message>.+)$")
+SKIPPED_HOST_RE = re.compile(r"^Skipping unreachable host: (?P<host>\S+)")
+ADHOC_UNREACHABLE_RE = re.compile(r"^(?P<host>\S+) \| UNREACHABLE!")
+ADHOC_MSG_RE = re.compile(r'^\s*"msg":\s*"(?P<message>.*?)",?\s*$')
 DPKG_ERROR_RE = re.compile(
     r"^(dpkg: error|dpkg: dependency problems|dpkg: warning|E: |Errors were encountered|"
     r"Sub-process |.*Permission denied|.*No such file or directory)"
@@ -79,6 +82,16 @@ def parse_ansible_log(log_text: str) -> Tuple[Dict[str, Dict[str, str]], Dict[st
     return task_results, recap
 
 
+def parse_skipped_hosts(log_text: str) -> List[str]:
+    """Hosts run_updates.sh dropped from the run because SSH preflight failed."""
+    skipped: List[str] = []
+    for line in log_text.splitlines():
+        match = SKIPPED_HOST_RE.match(line.strip())
+        if match:
+            skipped.append(match.group("host"))
+    return dedupe(skipped)
+
+
 def host_update_phrase(host: str, package_status: Optional[str], failed: bool, unreachable: bool, mode: str) -> str:
     if unreachable:
         return f"{host} was unreachable; no update was completed."
@@ -100,7 +113,7 @@ def host_update_phrase(host: str, package_status: Optional[str], failed: bool, u
     return f"{host} {phrase}."
 
 
-def build_summary(log_text: str, mode: str) -> List[str]:
+def build_summary(log_text: str, mode: str, skipped_hosts: List[str]) -> List[str]:
     task_results, recap = parse_ansible_log(log_text)
     package_results = task_results.get("Safely upgrade packages", {})
     reboot_results = task_results.get("Reboot after updates when Ubuntu requires it", {})
@@ -112,10 +125,16 @@ def build_summary(log_text: str, mode: str) -> List[str]:
         if host not in recap:
             hosts.append(host)
 
+    summary = [
+        f"{host} was skipped: SSH preflight could not connect, so no update was attempted."
+        for host in skipped_hosts
+    ]
+
     if not hosts:
+        if summary:
+            return summary
         return ["No per-host update summary could be parsed from the Ansible log."]
 
-    summary = []
     for host in hosts:
         counts = recap.get(host, {})
         failed = counts.get("failed", 0) > 0
@@ -205,6 +224,33 @@ def build_failure_details(log_text: str) -> List[str]:
     return details
 
 
+def build_preflight_failures(log_text: str) -> List[str]:
+    """Explain ad-hoc SSH preflight failures, which never produce a play recap."""
+    reasons: Dict[str, str] = {}
+    lines = log_text.splitlines()
+
+    for index, line in enumerate(lines):
+        unreachable_match = ADHOC_UNREACHABLE_RE.match(line)
+        if not unreachable_match:
+            continue
+
+        host = result_host(unreachable_match.group("host"))
+        for follow_up in lines[index + 1 : index + 8]:
+            message_match = ADHOC_MSG_RE.match(follow_up)
+            if message_match:
+                reasons.setdefault(host, message_match.group("message").strip())
+                break
+        else:
+            reasons.setdefault(host, "SSH connection failed during preflight")
+
+    details: List[str] = []
+    for host, reason in reasons.items():
+        details.append(f"{host} - SSH preflight")
+        details.append(f"  {reason}")
+
+    return details
+
+
 def build_warnings(log_text: str) -> List[str]:
     """Collect inventory and Ansible warnings once, not once per inventory parse."""
     warnings: List[str] = []
@@ -286,11 +332,18 @@ def main() -> int:
         "on",
     }
 
-    result = "SUCCESS" if args.status == 0 else "FAILED"
     mode_label = "DRY RUN" if args.mode == "dry-run" else "UPDATE"
     log_file = Path(args.log_file)
     log_text = full_text(log_file)
     runner = platform.node()
+
+    skipped_hosts = parse_skipped_hosts(log_text)
+    if args.status != 0:
+        result = "FAILED"
+    elif skipped_hosts:
+        result = "PARTIAL"
+    else:
+        result = "SUCCESS"
 
     duration = format_duration(args.started_at, args.finished_at)
     run_line = f"Started {args.started_at}, finished {args.finished_at}"
@@ -300,14 +353,14 @@ def main() -> int:
     body: List[str] = [
         f"{result}: {mode_label} run from {runner}",
         "",
-        *build_summary(log_text, args.mode),
+        *build_summary(log_text, args.mode, skipped_hosts),
         "",
         run_line,
         f"Exit status: {args.status}",
         f"Log file: {log_file}",
     ]
 
-    failure_details = build_failure_details(log_text)
+    failure_details = build_failure_details(log_text) + build_preflight_failures(log_text)
     if failure_details:
         body += ["", "Failures:", "---------", *failure_details]
 
