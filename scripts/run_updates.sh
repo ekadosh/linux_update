@@ -28,6 +28,7 @@ SSH_COMPATIBILITY_MODE="${SSH_COMPATIBILITY_MODE:-auto}"
 SSH_COMPATIBILITY_ARGS="${SSH_COMPATIBILITY_ARGS:--o ControlMaster=no -o KexAlgorithms=curve25519-sha256 -o HostKeyAlgorithms=ssh-ed25519 -o IPQoS=none}"
 SSH_PREFLIGHT_CONNECT_TIMEOUT="${SSH_PREFLIGHT_CONNECT_TIMEOUT:-10}"
 SSH_PREFLIGHT_WALL_TIMEOUT="${SSH_PREFLIGHT_WALL_TIMEOUT:-45}"
+SSH_PREFLIGHT_REQUIRE_ALL="${SSH_PREFLIGHT_REQUIRE_ALL:-false}"
 
 if [[ -n "${ANSIBLE_PRIVATE_KEY_FILE:-}" ]]; then
   ANSIBLE_PRIVATE_KEY_FILE="${ANSIBLE_PRIVATE_KEY_FILE/#\~/$HOME}"
@@ -81,12 +82,51 @@ EOF
   return 1
 }
 
+connectivity_args=()
+user_limit=""
+inventory_hosts=()
+preflight_reachable=()
+preflight_unreachable=()
+chosen_reachable=()
+chosen_unreachable=()
+unreachable_hosts=()
+playbook_limit_args=()
+
+list_inventory_hosts() {
+  ansible-inventory -i "$STATIC_INVENTORY" -i "$PROXMOX_INVENTORY" --list "$@" 2>/dev/null \
+    | python -c '
+import json
+import sys
+
+inventory = json.load(sys.stdin)
+hosts = set()
+seen_groups = set()
+pending = ["linux_update_targets"]
+
+while pending:
+    group = pending.pop()
+    if group in seen_groups:
+        continue
+    seen_groups.add(group)
+    data = inventory.get(group)
+    if not isinstance(data, dict):
+        continue
+    hosts.update(data.get("hosts", []))
+    pending.extend(data.get("children", []))
+
+for host in sorted(hosts):
+    print(host)
+'
+}
+
 run_connectivity_check() {
   local label="$1"
   shift
   local ssh_args="$1"
   shift
   local status=0
+  local output_file
+  output_file="$(mktemp)"
 
   echo "SSH preflight [$label]"
   echo "  connect timeout: ${SSH_PREFLIGHT_CONNECT_TIMEOUT}s"
@@ -100,8 +140,22 @@ run_connectivity_check() {
     env ANSIBLE_SSH_ARGS="$ssh_args" \
     ansible -i "$STATIC_INVENTORY" -i "$PROXMOX_INVENTORY" \
     linux_update_targets -m ansible.builtin.raw -a true \
-    -e ansible_become=false -T "$SSH_PREFLIGHT_CONNECT_TIMEOUT" "$@"
+    -e ansible_become=false -T "$SSH_PREFLIGHT_CONNECT_TIMEOUT" "$@" \
+    >"$output_file" 2>&1
   status=$?
+
+  cat "$output_file"
+
+  # A host counts as reachable only when it answered this preflight. Anything
+  # else -- rejected key, timeout, or no output at all -- is treated as
+  # unreachable so the run can continue without it.
+  mapfile -t preflight_reachable < <(
+    awk '$2 == "|" && ($3 == "SUCCESS" || $3 == "CHANGED") { print $1 }' "$output_file" | sort -u
+  )
+  mapfile -t preflight_unreachable < <(
+    awk '$2 == "|" && $3 ~ /^UNREACHABLE/ { print $1 }' "$output_file" | sort -u
+  )
+  rm -f "$output_file"
 
   case "$status" in
     0)
@@ -120,6 +174,7 @@ run_connectivity_check() {
 
 build_connectivity_args() {
   connectivity_args=()
+  user_limit=""
 
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
@@ -129,10 +184,12 @@ build_connectivity_args() {
           return 1
         fi
         connectivity_args+=("$1" "$2")
+        user_limit="$2"
         shift 2
         ;;
       --limit=*)
         connectivity_args+=("$1")
+        user_limit="${1#*=}"
         shift
         ;;
       *)
@@ -140,6 +197,55 @@ build_connectivity_args() {
         ;;
     esac
   done
+}
+
+# Turn the hosts that answered the preflight into a --limit for the playbook so
+# one unreachable host cannot cancel updates for the whole fleet.
+handle_partial_reachability() {
+  local label="$1"
+  local host=""
+  local reached=""
+  local matched=false
+  local skip_pattern=""
+  local limit_value=""
+
+  unreachable_hosts=()
+  if [[ ${#inventory_hosts[@]} -gt 0 ]]; then
+    for host in "${inventory_hosts[@]}"; do
+      matched=false
+      for reached in "${chosen_reachable[@]}"; do
+        if [[ "$host" == "$reached" ]]; then
+          matched=true
+          break
+        fi
+      done
+      if [[ "$matched" == false ]]; then
+        unreachable_hosts+=("$host")
+      fi
+    done
+  else
+    unreachable_hosts=("${chosen_unreachable[@]}")
+  fi
+
+  if [[ ${#unreachable_hosts[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  if [[ "$SSH_PREFLIGHT_REQUIRE_ALL" == "true" ]]; then
+    echo "SSH preflight [$label] could not reach: ${unreachable_hosts[*]}" >&2
+    echo "SSH_PREFLIGHT_REQUIRE_ALL=true, so the whole run is aborted." >&2
+    return 1
+  fi
+
+  for host in "${unreachable_hosts[@]}"; do
+    echo "Skipping unreachable host: $host (SSH preflight [$label] could not connect)"
+    skip_pattern+=":!$host"
+  done
+
+  limit_value="${user_limit:-all}$skip_pattern"
+  playbook_limit_args=(--limit "$limit_value")
+  echo "Continuing with ${#chosen_reachable[@]} reachable host(s): --limit $limit_value"
+  return 0
 }
 
 choose_ssh_args() {
@@ -166,12 +272,19 @@ choose_ssh_args() {
       ;;
   esac
 
+  mapfile -t inventory_hosts < <(list_inventory_hosts "${connectivity_args[@]}")
+  if [[ ${#inventory_hosts[@]} -eq 0 ]]; then
+    echo "Could not list inventory hosts; falling back to preflight output to name unreachable hosts." >&2
+  fi
+
   echo "Checking SSH connectivity with default SSH options"
   if run_connectivity_check "default" "$DEFAULT_ANSIBLE_SSH_ARGS" "${connectivity_args[@]}"; then
     ANSIBLE_SSH_ARGS="$DEFAULT_ANSIBLE_SSH_ARGS"
     export ANSIBLE_SSH_ARGS
     return 0
   fi
+  local default_reachable=("${preflight_reachable[@]}")
+  local default_unreachable=("${preflight_unreachable[@]}")
 
   echo "Default SSH connectivity failed. Retrying with compatibility SSH options:"
   echo "  $SSH_COMPATIBILITY_ARGS"
@@ -185,9 +298,32 @@ choose_ssh_args() {
     export ANSIBLE_SSH_ARGS
     return 0
   fi
+  local compat_reachable=("${preflight_reachable[@]}")
+  local compat_unreachable=("${preflight_unreachable[@]}")
 
-  echo "SSH connectivity failed with both default and compatibility SSH options." >&2
-  return 1
+  if [[ ${#default_reachable[@]} -eq 0 && ${#compat_reachable[@]} -eq 0 ]]; then
+    echo "SSH connectivity failed with both default and compatibility SSH options." >&2
+    return 1
+  fi
+
+  # Neither option set reached every host. Keep whichever reached more of them
+  # and update those; the unreachable ones are reported and skipped.
+  if [[ ${#compat_reachable[@]} -gt ${#default_reachable[@]} ]]; then
+    echo "Compatibility SSH options reached more hosts; using them for this update run."
+    ANSIBLE_SSH_ARGS="$SSH_COMPATIBILITY_ARGS"
+    export ANSIBLE_SSH_ARGS
+    chosen_reachable=("${compat_reachable[@]}")
+    chosen_unreachable=("${compat_unreachable[@]}")
+    handle_partial_reachability "compatibility"
+    return $?
+  fi
+
+  echo "Default SSH options reached the most hosts; using them for this update run."
+  ANSIBLE_SSH_ARGS="$DEFAULT_ANSIBLE_SSH_ARGS"
+  export ANSIBLE_SSH_ARGS
+  chosen_reachable=("${default_reachable[@]}")
+  chosen_unreachable=("${default_unreachable[@]}")
+  handle_partial_reachability "default"
 }
 
 echo "Writing Ansible output to $log_file"
@@ -220,7 +356,8 @@ set +e
   fi
 
   echo "Running Ansible playbook"
-  ansible-playbook -i "$STATIC_INVENTORY" -i "$PROXMOX_INVENTORY" "$PLAYBOOK" "$@"
+  ansible-playbook -i "$STATIC_INVENTORY" -i "$PROXMOX_INVENTORY" "$PLAYBOOK" "$@" \
+    ${playbook_limit_args[@]+"${playbook_limit_args[@]}"}
 } 2>&1 | tee "$log_file"
 ansible_status=${PIPESTATUS[0]}
 set -e

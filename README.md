@@ -139,6 +139,25 @@ SSH_PREFLIGHT_CONNECT_TIMEOUT=10
 SSH_PREFLIGHT_WALL_TIMEOUT=45
 ```
 
+### Unreachable Hosts
+
+A host that fails the SSH preflight no longer cancels the run. The hosts that
+answered the preflight are updated, and each host that did not is logged as:
+
+```text
+Skipping unreachable host: vm1 (SSH preflight [default] could not connect)
+```
+
+The run email then reports `[PARTIAL]` and names every skipped host along with
+the SSH error that caused the skip, so a newly built VM that has not been
+through `make create-user` yet does not block updates for the rest of the fleet.
+The run still fails outright when no host is reachable. To restore the old
+all-or-nothing behavior, set:
+
+```text
+SSH_PREFLIGHT_REQUIRE_ALL=true
+```
+
 ## Proxmox Permissions
 
 Use a Proxmox API token with the narrowest permissions that work for your
