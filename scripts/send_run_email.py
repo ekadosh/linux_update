@@ -26,6 +26,11 @@ INVENTORY_ERROR_RE = re.compile(r"^Inventory (?:error|warning): (?P<message>.+)$
 SKIPPED_HOST_RE = re.compile(r"^Skipping unreachable host: (?P<host>\S+)")
 ADHOC_UNREACHABLE_RE = re.compile(r"^(?P<host>\S+) \| UNREACHABLE!")
 ADHOC_MSG_RE = re.compile(r'^\s*"msg":\s*"(?P<message>.*?)",?\s*$')
+HOST_KEY_CHANGED_RE = re.compile(
+    r"^Host key changed: (?P<host>\S+)(?: \((?P<address>[^)]+)\))?: (?P<message>.+?)\.?$"
+)
+HOST_KEY_SCAN_UNREACHABLE_RE = re.compile(r"^unreachable during key scan: (?P<host>\S+)")
+HOST_KEY_BANNER = "REMOTE HOST IDENTIFICATION HAS CHANGED"
 DPKG_ERROR_RE = re.compile(
     r"^(dpkg: error|dpkg: dependency problems|dpkg: warning|E: |Errors were encountered|"
     r"Sub-process |.*Permission denied|.*No such file or directory)"
@@ -224,10 +229,42 @@ def build_failure_details(log_text: str) -> List[str]:
     return details
 
 
+def parse_host_key_changes(log_text: str) -> Dict[str, Dict[str, str]]:
+    """Host-key change reports from the known_hosts refresh, keyed by host."""
+    changes: Dict[str, Dict[str, str]] = {}
+    for line in log_text.splitlines():
+        match = HOST_KEY_CHANGED_RE.match(line.strip())
+        if not match:
+            continue
+        message = match.group("message").strip()
+        changes.setdefault(
+            match.group("host"),
+            {
+                "address": match.group("address") or "",
+                "message": message,
+                "accepted": "NOT updated" not in message,
+            },
+        )
+    return changes
+
+
+def preflight_reason(raw_message: str, host_key_change: Optional[Dict[str, str]]) -> str:
+    """Turn a raw ssh failure into one line a human can act on."""
+    if host_key_change and not host_key_change["accepted"]:
+        return f"SSH host key changed and was not accepted: {host_key_change['message']}"
+    if HOST_KEY_BANNER in raw_message:
+        return (
+            "SSH host key changed (REMOTE HOST IDENTIFICATION HAS CHANGED); the known_hosts "
+            "entry was not updated, so the host was skipped"
+        )
+    return raw_message
+
+
 def build_preflight_failures(log_text: str) -> List[str]:
     """Explain ad-hoc SSH preflight failures, which never produce a play recap."""
     reasons: Dict[str, str] = {}
     lines = log_text.splitlines()
+    host_key_changes = parse_host_key_changes(log_text)
 
     for index, line in enumerate(lines):
         unreachable_match = ADHOC_UNREACHABLE_RE.match(line)
@@ -235,13 +272,13 @@ def build_preflight_failures(log_text: str) -> List[str]:
             continue
 
         host = result_host(unreachable_match.group("host"))
+        raw_message = "SSH connection failed during preflight"
         for follow_up in lines[index + 1 : index + 8]:
             message_match = ADHOC_MSG_RE.match(follow_up)
             if message_match:
-                reasons.setdefault(host, message_match.group("message").strip())
+                raw_message = message_match.group("message").strip()
                 break
-        else:
-            reasons.setdefault(host, "SSH connection failed during preflight")
+        reasons.setdefault(host, preflight_reason(raw_message, host_key_changes.get(host)))
 
     details: List[str] = []
     for host, reason in reasons.items():
@@ -255,9 +292,19 @@ def build_warnings(log_text: str) -> List[str]:
     """Collect inventory and Ansible warnings once, not once per inventory parse."""
     warnings: List[str] = []
     for line in log_text.splitlines():
-        inventory_match = INVENTORY_ERROR_RE.match(line.strip())
+        stripped = line.strip()
+        inventory_match = INVENTORY_ERROR_RE.match(stripped)
         if inventory_match:
             warnings.append(f"Inventory: {inventory_match.group('message')}")
+            continue
+        scan_match = HOST_KEY_SCAN_UNREACHABLE_RE.match(stripped)
+        if scan_match:
+            warnings.append(
+                f"Host key: {scan_match.group('host')} did not answer the known_hosts key scan"
+            )
+    for host, change in parse_host_key_changes(log_text).items():
+        if change["accepted"]:
+            warnings.append(f"Host key: {host} changed; {change['message']}")
     return dedupe(warnings)
 
 

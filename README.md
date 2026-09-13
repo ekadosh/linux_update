@@ -158,6 +158,38 @@ all-or-nothing behavior, set:
 SSH_PREFLIGHT_REQUIRE_ALL=true
 ```
 
+### Changed Host Keys
+
+Every run refreshes `known_hosts` from the inventory before the SSH preflight
+(`scripts/refresh_known_hosts.py`, also run by `make known-hosts`). New hosts
+are added. A host whose key no longer matches, which is what happens when a VM
+is rebuilt, is handled like this:
+
+1. For a Proxmox VM the script reads the guest's own
+   `/etc/ssh/ssh_host_*_key.pub` through the QEMU guest agent. That path does
+   not go over the SSH connection, so it cannot be spoofed by a
+   man-in-the-middle. If the key inside the VM matches the key seen on the
+   network, the old `known_hosts` entry is replaced and the run continues:
+
+   ```text
+   Host key changed: vm1 (10.0.0.9): verified through the Proxmox guest agent; known_hosts updated.
+   ```
+
+2. If the key inside the VM does not match, or the key cannot be verified (the
+   API token lacks `VM.GuestAgent.FileRead`, or the host is not a Proxmox VM),
+   `known_hosts` is left alone. The preflight then skips the host and the run
+   email explains why, with the new fingerprint and the exact commands to
+   accept it by hand once you have confirmed it on the console:
+
+   ```text
+   Host key changed: vm1 (10.0.0.9): NOT updated - could not be verified: ...
+   ```
+
+Set `KNOWN_HOSTS_TRUST_CHANGED_KEYS=true` in `.env` to accept unverifiable
+changed keys automatically. That trades man-in-the-middle protection for
+convenience, so prefer granting the guest-agent privilege instead. A key that
+the guest itself disowns is never accepted, even with that flag.
+
 ## Proxmox Permissions
 
 Use a Proxmox API token with the narrowest permissions that work for your
@@ -170,7 +202,14 @@ VM.Audit VM.Snapshot VM.Monitor
 For Proxmox VE 9, guest-agent privileges are more granular; use the guest-agent
 audit privilege instead of `VM.Monitor` if your cluster rejects `VM.Monitor`.
 Automatic rollback also needs `VM.Snapshot.Rollback`, and the default
-post-rollback start behavior needs `VM.PowerMgmt`.
+post-rollback start behavior needs `VM.PowerMgmt`. Verifying a rebuilt VM's
+new SSH host key through the guest agent needs `VM.GuestAgent.FileRead` (see
+"Changed Host Keys"); without it a changed key is reported but not accepted.
+On Proxmox VE 9 the full role therefore looks like:
+
+```bash
+pveum role modify Ansible -privs "Sys.Audit,VM.Audit,VM.GuestAgent.Audit,VM.GuestAgent.FileRead,VM.PowerMgmt,VM.Snapshot,VM.Snapshot.Rollback"
+```
 
 If the token lacks guest-agent privileges on a particular VM, the inventory
 script now logs an `Inventory warning` for that VM, drops it from the run, and
@@ -340,6 +379,7 @@ proxmox_rollback_timeout: 300
 
 - This is for package updates, not Ubuntu release upgrades.
 - Host key checking is enabled. If a VM is new, run `make known-hosts` before
-  `make ping` or `make update`.
+  `make ping` or `make update`. A rebuilt VM's changed key is verified through
+  the Proxmox guest agent; see "Changed Host Keys".
 - The cron job runs from this project directory and uses `.env`, so keep that
   file readable only by the account running cron.
