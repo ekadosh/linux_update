@@ -16,7 +16,7 @@ define LOAD_ENV
 if [[ ! -f "$(ENV_FILE)" ]]; then echo "Missing $(ENV_FILE). Copy .env.example to .env and fill in values." >&2; exit 1; fi; set -a; source "$(ENV_FILE)"; set +a; export PATH="$(CURDIR)/.venv/bin:$$PATH"; export ANSIBLE_REMOTE_USER="$${ANSIBLE_SSH_USER:-ansible}";
 endef
 
-.PHONY: bootstrap create-user known-hosts inventory ping update dry-run install-cron syntax-check static-inventory-check shell-check email-check known-hosts-check test
+.PHONY: bootstrap create-user known-hosts inventory ping update dry-run install-cron syntax-check static-inventory-check shell-check email-check known-hosts-check update-safety-check test
 
 bootstrap:
 	./scripts/bootstrap.sh
@@ -57,4 +57,7 @@ email-check:
 known-hosts-check:
 	tests/known_hosts_checks.py
 
-test: shell-check email-check known-hosts-check syntax-check
+update-safety-check:
+	.venv/bin/python tests/update_safety_checks.py
+
+test: shell-check email-check known-hosts-check syntax-check update-safety-check
