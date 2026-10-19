@@ -6,8 +6,12 @@ non-Proxmox Debian/Ubuntu servers, creates pre-update snapshots for Proxmox VMs,
 applies safe apt upgrades, and reboots each host when the OS reports that a
 reboot is required.
 
-The update playbook runs with `serial: 1`, so only one VM is being changed at a
-time.
+The update playbook uses the `host_pinned` strategy with one worker, so each
+host finishes before the next starts. A failed or unreachable host does not
+prevent the remaining hosts from being processed. Failures stay visible in the
+recap and email, and the overall run still exits with a nonzero status.
+The runner enforces `--forks 1`; direct playbook invocations also require one
+worker, which is the default in `ansible.cfg`.
 
 ## Setup
 
@@ -281,8 +285,8 @@ Before upgrades, the playbook runs `apt-get clean`, checks free space under
 overridden globally in `group_vars/all.yml` or per host in inventory.
 Cache cleanup retries APT lock conflicts using `apt_retries` and
 `apt_retry_delay` (ten retries, 30 seconds apart by default); other cleanup
-errors fail immediately. Preparation failures stop the run without rolling
-back the VM.
+errors fail immediately. Preparation failures stop updates for that host
+without rolling back the VM; the run continues with the remaining hosts.
 
 Limit to one host:
 
@@ -369,8 +373,8 @@ Proxmox-discovered VM causes Ansible to roll that VM back to its pre-update
 snapshot and start it afterward by default.
 
 Failures before that point (including cache cleanup, disk-space checks, and
-package-index refresh) stop the run without attempting rollback. The boundary
-is set before invoking the upgrade, since a failed upgrade can leave partial
+package-index refresh) stop that host's update without attempting rollback.
+The boundary is set before invoking the upgrade, since a failed upgrade can leave partial
 package changes. Check mode never enables rollback. Temporary package holds
 are still released by the cleanup task.
 

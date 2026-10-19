@@ -2,7 +2,9 @@
 - name: Snapshot and update Debian-family Linux hosts
   hosts: linux_update_targets
   gather_facts: true
-  serial: 1
+  # One worker finishes each host before starting the next, even after failures.
+  # serial: 1 instead aborts the play when its only host in a batch fails.
+  strategy: ansible.builtin.host_pinned
   become: true
   vars_files:
     - ../group_vars/all.yml
@@ -13,6 +15,11 @@
     UCF_FORCE_CONFOLD: "1"
 
   pre_tasks:
+    - name: Require one worker for sequential host updates
+      ansible.builtin.assert:
+        that: ansible_forks | int == 1
+        fail_msg: "This playbook requires --forks 1 to update one host at a time."
+
     - name: Confirm target is Ubuntu or Debian family
       ansible.builtin.assert:
         that:

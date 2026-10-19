@@ -136,10 +136,11 @@ run_connectivity_check() {
     echo "  inventory limit args: ${connectivity_args[*]}"
   fi
 
+  # Keep read-only probes parallel within the wall timeout; updates use one worker.
   timeout --foreground "$SSH_PREFLIGHT_WALL_TIMEOUT" \
     env ANSIBLE_SSH_ARGS="$ssh_args" \
     ansible -i "$STATIC_INVENTORY" -i "$PROXMOX_INVENTORY" \
-    linux_update_targets -m ansible.builtin.raw -a true \
+    linux_update_targets -m ansible.builtin.raw -a true --forks 10 \
     -e ansible_become=false -T "$SSH_PREFLIGHT_CONNECT_TIMEOUT" "$@" \
     >"$output_file" 2>&1
   status=$?
@@ -357,7 +358,7 @@ set +e
 
   echo "Running Ansible playbook"
   ansible-playbook -i "$STATIC_INVENTORY" -i "$PROXMOX_INVENTORY" "$PLAYBOOK" "$@" \
-    ${playbook_limit_args[@]+"${playbook_limit_args[@]}"}
+    ${playbook_limit_args[@]+"${playbook_limit_args[@]}"} --forks 1
 } 2>&1 | tee "$log_file"
 ansible_status=${PIPESTATUS[0]}
 set -e
