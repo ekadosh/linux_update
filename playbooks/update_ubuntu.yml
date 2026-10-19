@@ -62,6 +62,10 @@
         - not ansible_check_mode
 
   tasks:
+    - name: Initialize package change tracking
+      ansible.builtin.set_fact:
+        update_package_changes_started: false
+
     - name: Update host and verify health
       block:
         - name: Clean apt package archive cache before upgrade
@@ -70,6 +74,13 @@
               - apt-get
               - clean
           changed_when: false
+          timeout: "{{ apt_task_timeout | int }}"
+          register: apt_clean
+          until: >-
+            apt_clean is succeeded
+            or not ((apt_clean.stderr | default('')) is search('Could not get lock|Unable to lock'))
+          retries: "{{ apt_retries | int }}"
+          delay: "{{ apt_retry_delay | int }}"
           when: not ansible_check_mode
 
         - name: Check available space for apt package archives
@@ -151,6 +162,12 @@
             - not ansible_check_mode
             - apt_min_age_days | int > 0
             - age_held_packages | default([]) | length > 0
+
+        # Mark before invoking apt: a failed upgrade may have partially changed packages.
+        - name: Mark package changes as started
+          ansible.builtin.set_fact:
+            update_package_changes_started: true
+          when: not ansible_check_mode
 
         - name: Safely upgrade packages
           ansible.builtin.apt:
@@ -250,6 +267,15 @@
           when: not ansible_check_mode
 
       rescue:
+        - name: Fail preparation without rolling back the VM
+          ansible.builtin.fail:
+            msg: >-
+              Preparation or check-mode task failed on {{ inventory_hostname }}:
+              {{ ansible_failed_task.name }}:
+              {{ ansible_failed_result.stderr | default(ansible_failed_result.msg | default('Unknown error'), true) }}.
+              No package upgrade or removal was attempted; automatic rollback was skipped.
+          when: not (update_package_changes_started | default(false) | bool)
+
         - name: Roll back Proxmox VM to pre-update snapshot
           become: false
           delegate_to: localhost

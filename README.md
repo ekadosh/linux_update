@@ -279,6 +279,10 @@ Before upgrades, the playbook runs `apt-get clean`, checks free space under
 `/var/cache/apt/archives`, and fails early if less than
 `apt_min_archive_free_mb` is available. The default is 512 MB and can be
 overridden globally in `group_vars/all.yml` or per host in inventory.
+Cache cleanup retries APT lock conflicts using `apt_retries` and
+`apt_retry_delay` (ten retries, 30 seconds apart by default); other cleanup
+errors fail immediately. Preparation failures stop the run without rolling
+back the VM.
 
 Limit to one host:
 
@@ -359,10 +363,16 @@ start with `ansible-pre-update-`.
 
 After package updates and any required reboot, the playbook verifies that SSH
 recovers, passwordless sudo still works, `apt-get check` succeeds, and
-`dpkg --audit` reports no interrupted package operations. If any update or
-verification task fails on a Proxmox-discovered VM, Ansible rolls that VM back
-to the pre-update snapshot created for that host and starts it afterward by
-default.
+`dpkg --audit` reports no interrupted package operations. Once the package
+upgrade task is about to run, any update or verification failure on a
+Proxmox-discovered VM causes Ansible to roll that VM back to its pre-update
+snapshot and start it afterward by default.
+
+Failures before that point (including cache cleanup, disk-space checks, and
+package-index refresh) stop the run without attempting rollback. The boundary
+is set before invoking the upgrade, since a failed upgrade can leave partial
+package changes. Check mode never enables rollback. Temporary package holds
+are still released by the cleanup task.
 
 Static non-Proxmox hosts run the same verification checks, but they cannot be
 rolled back automatically because they have no Proxmox snapshot metadata.
