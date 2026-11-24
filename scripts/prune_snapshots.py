@@ -128,8 +128,14 @@ def main() -> int:
     parser.add_argument("--node", required=True, help="Proxmox node name")
     parser.add_argument("--vmid", required=True, help="QEMU VMID")
     parser.add_argument("--keep", type=int, default=3, help="Snapshots to keep")
-    parser.add_argument("--timeout", type=int, default=120, help="Task timeout seconds")
+    parser.add_argument(
+        "--timeout", type=int, default=os.getenv("PROXMOX_PRUNE_TIMEOUT") or "120",
+        help="Seconds per snapshot deletion (defaults to PROXMOX_PRUNE_TIMEOUT or 120)",
+    )
     args = parser.parse_args()
+
+    if args.timeout < 1:
+        parser.error("snapshot prune timeout must be at least 1 second")
 
     if args.keep < 1:
         print("keep must be at least 1", file=sys.stderr)

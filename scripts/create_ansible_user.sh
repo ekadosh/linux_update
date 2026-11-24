@@ -128,7 +128,7 @@ sudoers_file="/etc/sudoers.d/90-$ansible_user"
 if ! id -u "$ansible_user" >/dev/null 2>&1; then
   sudo useradd --create-home --shell /bin/bash --groups sudo "$ansible_user"
 else
-  sudo usermod --append --groups sudo "$ansible_user"
+  sudo usermod --append --groups sudo --shell /bin/bash "$ansible_user"
 fi
 
 # useradd leaves the password field locked on some distros, and sshd can reject
@@ -173,10 +173,17 @@ REMOTE
       echo "warn: cannot verify SSH; private key not found: $ansible_identity_file" >&2
       continue
     fi
-    ssh -i "$ansible_identity_file" \
+    if ! ssh -i "$ansible_identity_file" \
+      -o IdentitiesOnly=yes \
       -o BatchMode=yes \
       -o StrictHostKeyChecking=accept-new \
-      "$ansible_user@$host" "sudo -n true"
+      "$ansible_user@$host" "sudo -n true"; then
+      echo "error: provisioning completed, but SSH/passwordless sudo verification failed for $ansible_user@$host." >&2
+      echo "Check the server's SSH logs and DenyUsers/AllowUsers rules, including /etc/ssh/sshd_config.d/*.conf." >&2
+      echo "The helper does not change SSH access restrictions. Confirm any existing restriction should be removed." >&2
+      echo "Also confirm your Ansible runner uses the private key matching $public_key_file." >&2
+      exit 1
+    fi
     echo "ok: verified $ansible_user@$host can authenticate and run passwordless sudo"
   fi
 done
